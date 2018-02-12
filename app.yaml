@@ -1,0 +1,8 @@
+runtime: python27
+service: messenger
+api_version: 1
+threadsafe: true
+
+handlers:
+- url: /.*
+  script: main.app
