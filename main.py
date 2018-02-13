@@ -7,15 +7,13 @@ import requests_toolbelt.adapters.appengine
 
 requests_toolbelt.adapters.appengine.monkeypatch()
 
-
 class MainPage(webapp2.RequestHandler):
     def get(self):
         if self.request.get("hub.mode") == "subscribe" and self.request.get("hub.challenge"):
             if self.request.get("hub.verify_token") == '1234':
-                self.response.write(request.get(["hub.challenge"]))
+                self.response.write(self.request.get("hub.challenge"))
             else:
                 self.abort(403)
-        return "Hello world"
 
 
 app = webapp2.WSGIApplication([
