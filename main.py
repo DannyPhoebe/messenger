@@ -12,7 +12,7 @@ import urlparse
 #from hashlib import pbkdf2_hmac
 
 from model import Monitor, Product
-from ndb_utils import create_monitor_entity, create_product_entity, fetch_by_key
+from ndb_utils import create_monitor_entity, create_product_entity, fetch_by_key, monitor_quota, get_monitoring
 
 requests_toolbelt.adapters.appengine.monkeypatch()
 
@@ -38,7 +38,7 @@ class MainPage(webapp2.RequestHandler):
                             if messaging_event["message"].get("attachments"):
                                 attachments = messaging_event["message"]["attachments"]
                                 for att in attachments:
-                                    if att["type"] == "fallback":
+                                    if att["type"] in  ["fallback", "template"]:
                                         self.send_action(sender_id, "mark_seen")
                                         self.send_action(sender_id, "typing_on")
                                         parsed = urlparse.urlparse(att["url"])
@@ -46,12 +46,9 @@ class MainPage(webapp2.RequestHandler):
                                         price_stat = self.get_price_stat("amazon.com", url)
                                         meta = self.get_metadata(url)
                                         product_key = create_product_entity(link=url, highest=100, lowest=50, current=[(55,1530242624)], meta=meta)
-                                        logging.info("ppp")
-                                        logging.info(product_key)
-                                        #product_key = self.create_product_entity(id=meta["asin"], link=url, highest=highest, lowest=lowest, current=current)
-                                        monitor_key = create_monitor_entity(uid=sender_id, product=product_key.get())
-                                        logging.info("mmm")
-                                        logging.info(monitor_key)
+                                        logging.info("product_key: {}".format(product_key))
+                                        monitor_key = create_monitor_entity(uid=sender_id, product_key=product_key.urlsafe(), threshold=50)
+                                        logging.info("monitor_key: {}".format(monitor_key))
                                         self.send_generic_template(sender_id, meta, price_stat, monitor_key.urlsafe())
                             elif messaging_event["message"].get("nlp"):
                                 entities = messaging_event["message"]["nlp"]["entities"]
@@ -68,14 +65,25 @@ class MainPage(webapp2.RequestHandler):
                             logging.warning(traceback.format_exc())
 
                     if messaging_event.get("postback"):  # user clicked/tapped "postback" button in earlier message
+                        title = messaging_event["postback"]["title"]
                         payload = json.loads(messaging_event["postback"]["payload"])
-                        monitor = fetch_by_key(payload["key"])
-                        monitor.switch = True
-                        monitor.put()
-                        #query = fetch_by_key(alert_data["key"])
-                        #query.alert = True
-                        #query.put()
-                        self.send_message(sender_id, "roger that!")
+                        if title == "set price alert":
+                            monitor = fetch_by_key(payload["key"])
+                            if monitor_quota(monitor.uid):
+                                monitor.switch = True
+                                monitor.put()
+                                self.send_message(sender_id, "roger that!")
+                            else:
+                                self.send_charge_template(sender_id)
+                        if title == "stop alert":
+                            monitor = fetch_by_key(payload["key"])
+                            monitor.switch = False
+                            monitor.put()
+                            self.send_message(sender_id, "release 1 quota")
+                        if title == "more quota":
+                            pass
+                        if title == "view my alerts":
+                            self.send_collection_template(sender_id)
 
                     if messaging_event.get("delivery"):  # delivery confirmation
                         pass
@@ -212,7 +220,115 @@ class MainPage(webapp2.RequestHandler):
             logging.info(r.status_code)
             logging.info(r.text)
 
+    def element_builder(self, monitor_entity):
+        target = fetch_by_key(monitor_entity.target)
+        element = {
+            "title": target.meta["alt"],
+            "image_url": target.meta["img"],
+            "subtitle": "setting: {}".format(monitor_entity.threshold),
+            "default_action": {
+                "type": "web_url",
+                "url": target.link,
+                "webview_height_ratio": "full",
+                "messenger_extensions": False,
+                #"fallback_url": "https://petersfancybrownhats.com/"
+            }, # end of default_action
+            "buttons":[
+                # b1
+                {
+                     "type": "postback",
+                     "title": "stop alert",
+                     "payload": json.dumps(
+                         {
+                             "key": monitor_entity.key.urlsafe()
+                         }
+                     )
+                },
+#                # b2
+#                {
+#                     "type": "element_share",
+#               },
+            ] # end of buttons
+        } # end of elements
+        return element
 
+    def send_collection_template(self, recipient_id):
+        logging.info("sending collection to {recipient}".format(recipient=recipient_id))
+        params = {
+            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
+        }
+        headers = {
+            "Content-Type": "application/json"
+        }
+        data = json.dumps({
+            "recipient": {
+                "id": recipient_id
+            },
+            "message": {
+                "attachment": {
+                    "type":"template",
+                    "payload":{
+                        "template_type":"generic",
+                        "sharable": "true",
+                        "elements": [self.element_builder(item) for item in get_monitoring(recipient_id)]   
+                    } # end of payload
+                } # end of attachment
+            } # end of message
+        })
+        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
+        if r.status_code != 200:
+            logging.info(r.status_code)
+            logging.info(r.text)
+
+    def send_charge_template(self, recipient_id):
+        logging.info("sending charge to {recipient}".format(recipient=recipient_id))
+        params = {
+            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
+        }
+        headers = {
+            "Content-Type": "application/json"
+        }
+        data = json.dumps({
+            "recipient": {
+                "id": recipient_id
+            },
+            "message": {
+                "attachment": {
+                    "type":"template",
+                    "payload":{
+                        "template_type":"button",
+                        "text": "Oops! Run out of free alert quota",
+                        "buttons": [
+                            # b1
+                            {
+                                 "type": "postback",
+                                 "title": "more quota",
+                                 "payload": json.dumps(
+                                     {
+                                         "key": "buy"
+                                     }
+                                 )
+                            },
+                            # b2
+                            {
+                                 "type": "postback",
+                                 "title": "view my alerts",
+                                 "payload": json.dumps(
+                                     {
+                                         "key": "collection"
+                                     }
+                                 )
+                            }
+                        ]
+                    } # end of payload
+                } # end of attachment
+            } # end of message
+        })
+        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
+        if r.status_code != 200:
+            logging.info(r.status_code)
+            logging.info(r.text)
+            
     def get_metadata(self, url):
         import requests
         from bs4 import BeautifulSoup
@@ -222,10 +338,11 @@ class MainPage(webapp2.RequestHandler):
         soup = BeautifulSoup(res.text, "lxml")
         #meta = {"asin": re.search("dp/([A-Z0-9]+?)/", url).group(1)}
         img = soup.select("#landingImage")[0]
-        meta = {"asin": soup.select("#ASIN")[0]["value"],
-                "alt": img["alt"],
-                "img": img["data-old-hires"]
-                #"img": json.loads(img["data-a-dynamic-image"]).keys()[0]
+        meta = {
+            "asin": soup.select("#ASIN")[0]["value"],
+            "alt": img["alt"],
+            "img": img["data-old-hires"]
+            #"img": json.loads(img["data-a-dynamic-image"]).keys()[0]
         }
         logging.info(meta)
         return meta

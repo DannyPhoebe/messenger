@@ -12,10 +12,11 @@ class Product(ndb.Model): # asin as key
 
 class Monitor(ndb.Model):
     uid = ndb.StringProperty(indexed=True) 
-    target = ndb.StructuredProperty(Product)
+    target = ndb.StringProperty(indexed=True) 
+    #target = ndb.StructuredProperty(Product)
     switch = ndb.BooleanProperty(indexed=True, default=False)
     threshold = ndb.IntegerProperty(indexed=False)
-    alert = ndb.ComputedProperty(lambda self: self.target.current[-1][0] < self.threshold)
+    alert = ndb.ComputedProperty(lambda self: self.threshold < self.threshold)  # !!!
     timestamp = ndb.DateTimeProperty(auto_now=True)
 
 #class Query(ndb.Model):
