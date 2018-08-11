@@ -5,16 +5,18 @@ import re
 import os
 import logging
 import webapp2
-import requests
-import requests_toolbelt.adapters.appengine
 import traceback
 import urlparse
 #from hashlib import pbkdf2_hmac
 
-from model import Monitor, Product
-from ndb_utils import create_monitor_entity, create_product_entity, fetch_by_key, monitor_quota, get_monitoring
+import cloudstorage as gcs
 
-requests_toolbelt.adapters.appengine.monkeypatch()
+
+import crawler_api
+import ndb_utils
+import send_api
+
+#requests_toolbelt.adapters.appengine.monkeypatch()
 
 class MainPage(webapp2.RequestHandler):
     def get(self):
@@ -23,344 +25,119 @@ class MainPage(webapp2.RequestHandler):
                 self.response.write(self.request.get("hub.challenge"))
             else:
                 self.abort(403)
+        else:
+            self.response.write("Hello World")
 
     def post(self):
         data = json.loads(self.request.body)
-        logging.info(data)
+        logging.info("Request body:{}".format(data))
         if data["object"] == "page":
             for entry in data["entry"]:
                 for messaging_event in entry["messaging"]:
                     sender_id = messaging_event["sender"]["id"]        # the facebook ID of the person sending you the message
                     recipient_id = messaging_event["recipient"]["id"]  # the recipient's ID, which should be your page's facebook ID
                     if messaging_event.get("message"):  # someone sent us a message
+                        send_api.send_action(sender_id, "mark_seen")
+                        send_api.send_action(sender_id, "typing_on")
+                        return
                         #message_text = messaging_event["message"]["text"]  # the message's text
+#                        urls = []
+                        if messaging_event["message"].get("attachments"):  # send via share button
+                            attachments = messaging_event["message"]["attachments"]
+                            for att in attachments:
+                                if att["type"] in ["fallback", "template"]:
+                                    parsed = urlparse.urlparse(att["url"])
+                                    url = urlparse.parse_qs(parsed.query)["u"][0]
+#                                    urls.append(url)
+                                else:
+                                    send_api.send_message(sender_id, "目前追價弓只接受amazon的商品頁面！")
+                                    return
+                        elif messaging_event["message"].get("nlp") and messaging_event["message"]["nlp"]["entities"].get("url"):  # send by messaging url directly
+                            entities = messaging_event["message"]["nlp"]["entities"]
+                            for url in entities.get("url"):
+                                if url["domain"] in ["amazon.com", "amazon.co.jp"]:
+                                    url = url["value"]
+                            else:
+                                send_api.send_message(sender_id, "目前追價弓只接受amazon的商品頁面！")
+                                return
+                        else:
+                            send_api.send_message(sender_id, "請分享/貼上amazon商品頁面，讓追價弓為您掌握良機！")
+                            return
+                        meta = crawler_api.get_meta(url)
+                        logging.info(meta)
+                        bucket = "amazon_price_history"
                         try:
-                            if messaging_event["message"].get("attachments"):
-                                attachments = messaging_event["message"]["attachments"]
-                                for att in attachments:
-                                    if att["type"] in  ["fallback", "template"]:
-                                        self.send_action(sender_id, "mark_seen")
-                                        self.send_action(sender_id, "typing_on")
-                                        parsed = urlparse.urlparse(att["url"])
-                                        url = urlparse.parse_qs(parsed.query)["u"][0]
-                                        price_stat = self.get_price_stat("amazon.com", url)
-                                        meta = self.get_metadata(url)
-                                        product_key = create_product_entity(link=url, highest=100, lowest=50, current=[(55,1530242624)], meta=meta)
-                                        logging.info("product_key: {}".format(product_key))
-                                        monitor_key = create_monitor_entity(uid=sender_id, product_key=product_key.urlsafe(), threshold=50)
-                                        logging.info("monitor_key: {}".format(monitor_key))
-                                        self.send_generic_template(sender_id, meta, price_stat, monitor_key.urlsafe())
-                            elif messaging_event["message"].get("nlp"):
-                                entities = messaging_event["message"]["nlp"]["entities"]
-                                urls = entities.get("url")
-                                for url in urls:
-                                    if url["domain"] in ["amazon.com", "amazon.co.jp"]:
-                                        self.send_action(sender_id, "mark_seen")
-                                        self.send_action(sender_id, "typing_on")
-                                        url = url["value"]
-                                        #price_stat = self.get_price_stat(url["domain"], url["value"])
-                                        price_stat = self.get_price_stat("amazon.com", url)
-                                        meta = self.get_metadata(url)
+                            f = gcs.open("/" + os.path.join(bucket, meta["asin"]))
+                            current, lowest, history = json.loads(f.read())
+                            logging.info("existed")
                         except:
-                            logging.warning(traceback.format_exc())
+                            current, lowest, history = crawler_api.get_stat(url)
+                            with gcs.open("/" + os.path.join(bucket, meta["asin"]), "w") as o:
+                                o.write(json.dumps([current, lowest, history ]))
+                            logging.info("crawling")
+
+                        user_key = ndb_utils.create_user_entity(uid=sender_id)
+                        logging.info("user_key: {}".format(user_key))
+                        product_key = ndb_utils.create_product_entity(url, current, lowest, history, meta)
+                        logging.info("product_key: {}".format(product_key))
+                        monitor_key = ndb_utils.create_monitor_entity(user_key.id(), product_key.id(), current)
+                        logging.info("monitor_key: {}".format(monitor_key))
+                        currency="$"
+                        send_api.send_generic_template(
+                            sender_id,
+                            meta,
+                            "現價: {symbl}{cur}\n最低: {symbl}{low}\n可省: {symbl}{bft}({pct}%)".format(symbl=currency, cur=current, low=lowest, bft=(lowest-current) if lowest != "N/A" else "N/A",  pct=round((lowest-current)*100/current,1) if lowest != "N/A" else "N/A"),
+                            monitor_key.urlsafe()
+                        )
+#                                    if "Amazon Price History" in price_stat:
+#                                        hist = price_stat["Amazon Price History"][0] # 0: HLCA, 1: last modified
+#                                    elif "3rd Party New Price History" in price_stat:
+#                                        hist = price_stat["3rd Party New Price History"][0]
+#                                    else:
+#                                        logging.warning("No price data found: {}".format(product_key))
+#                                        send_api.send_message(sender_id, "Oops! 追價弓維修中")
+#                                        return 
+#                                    low = hist["Lowest"][0] if "Lowest" in hist else "N/A"
+#                                    cur = hist["Current"][0]
+#                                    monitor_key = create_monitor_entity(uid=sender_id, product_key=product_key.urlsafe(), threshold=cur)
+
+
+                                    #price_stat = self.get_price_stat(url["domain"], url["value"])
+#                        except:
+#                            logging.warning(traceback.format_exc())
 
                     if messaging_event.get("postback"):  # user clicked/tapped "postback" button in earlier message
+                        send_api.send_action(sender_id, "mark_seen")
+                        send_api.send_action(sender_id, "typing_on")
                         title = messaging_event["postback"]["title"]
                         payload = json.loads(messaging_event["postback"]["payload"])
-                        if title == "set price alert":
-                            monitor = fetch_by_key(payload["key"])
-                            if monitor_quota(monitor.uid):
+                        if title == u"追價":
+                            monitor = ndb_utils.fetch_by_urlsafe_key(payload["key"])
+                            if ndb_utils.has_quota(monitor.user):
                                 monitor.switch = True
                                 monitor.put()
-                                self.send_message(sender_id, "roger that!")
+                                send_api.send_message(sender_id, "鎖定!")
                             else:
-                                self.send_charge_template(sender_id)
-                        if title == "stop alert":
-                            monitor = fetch_by_key(payload["key"])
-                            monitor.switch = False
-                            monitor.put()
-                            self.send_message(sender_id, "release 1 quota")
-                        if title == "more quota":
+                                send_api.send_charge_template(sender_id)
+                        if title == u"移除":
+                            monitor = ndb_utils.fetch_by_urlsafe_key(payload["key"])
+                            if monitor.switch:
+                                monitor.switch = False
+                                monitor.put()
+                                send_api.send_message(sender_id, "釋放quota")
+#                            else:
+#                                send_api.send_message(sender_id, "已不存在")
+                        if title == u"取得更多quota":
                             pass
-                        if title == "view my alerts":
-                            self.send_collection_template(sender_id)
+                        if title == u"檢視我的追價":
+                            collection = ndb_utils.get_monitoring(sender_id)
+                            send_api.send_collection_template(sender_id, collection)
 
                     if messaging_event.get("delivery"):  # delivery confirmation
                         pass
 
                     if messaging_event.get("optin"):  # optin confirmation
                         pass
-
-
-    def send_message(self, recipient_id, message_text):
-        logging.info("sending message to {recipient}: {text}".format(recipient=recipient_id, text=message_text))
-        params = {
-            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
-            #"appsecret_proof": pbkdf2_hmac('sha256', os.environ["PAGE_ACCESS_TOKEN"], os.environ["APP_SECRET"], 100000)
-        }
-        headers = {
-                "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "text": message_text
-            }
-        })
-        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
-        if r.status_code != 200:
-            logging.info(r.status_code)
-            logging.info(r.text)
-
-    def send_action(self, recipient_id, action):
-        logging.info("sending {action} to {recipient}".format(action=action, recipient=recipient_id))
-        params = {
-            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
-        }
-        headers = {
-                "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "recipient": {
-                "id": recipient_id
-            },
-            "sender_action": action
-        })
-        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
-        if r.status_code != 200:
-            logging.info(r.status_code)
-            logging.info(r.text)
-
-    def send_generic_template(self, recipient_id, meta, price_stat, monitor_key):
-        logging.info("sending generic_template to {recipient}".format(recipient=recipient_id))
-        params = {
-            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
-        }
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "attachment": {
-                    "type":"template",
-                    "payload":{
-                        "template_type":"generic",
-                        "sharable": "true",
-                        "elements":[
-                            {
-                                "title": meta["alt"],
-                                "subtitle": price_stat,
-                                "buttons":[
-                                    # b1
-                                    {
-                                        "type": "postback",
-                                        "title": "set price alert",
-                                        "payload": json.dumps(
-                                            {
-                                                "key": monitor_key
-                                            }
-                                        )
-                                    },
-                                    # b2
-                                    #{
-                                    #    "type": "web_url",
-                                    #    "url": "https://www.amazon.co.jp",
-                                    #    "title": "buy it",
-                                    #},
-                                    # b3
-                                    {
-                                        "type":"element_share",
-                                        "share_contents": {
-                                            "attachment": {
-                                                "type": "template",
-                                                "payload":{
-                                                    "template_type":"generic",
-                                                    "sharable": "true",
-                                                    "elements":[
-                                                        {
-                                                            "title": meta["alt"],
-                                                            "image_url": meta["img"],
-                                                            "subtitle": price_stat,
-                                                            "default_action": {
-                                                                "type": "web_url",
-                                                                "url": "https://www.amazon.co.jp",
-                                                                "webview_height_ratio": "tall",
-                                                                "messenger_extensions": False,
-                                                                #"fallback_url": "https://petersfancybrownhats.com/"
-                                                            }, # end of default_action
-                                                            "buttons":[
-                                                                # b1
-                                                                {
-                                                                    "type": "web_url",
-                                                                    #"url": "https://www.facebook.com/卡喜多-Cardcito-166640317462344/",
-                                                                    "url": "https://m.me/166640317462344",
-                                                                    "title":"create your collection",
-                                                                },
-                                                            ] # end of buttons
-                                                        } # end of elements
-                                                    ] # end of elements
-                                                } # end of payload
-                                            } # end of attachment
-                                        } # end of ahare_contents
-                                    }
-                                ] # end of buttons
-                           } # end of elements
-                        ] # end of elements      
-                    } # end of payload
-                } # end of attachment
-            } # end of message
-        })
-        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
-        if r.status_code != 200:
-            logging.info(r.status_code)
-            logging.info(r.text)
-
-    def element_builder(self, monitor_entity):
-        target = fetch_by_key(monitor_entity.target)
-        element = {
-            "title": target.meta["alt"],
-            "image_url": target.meta["img"],
-            "subtitle": "setting: {}".format(monitor_entity.threshold),
-            "default_action": {
-                "type": "web_url",
-                "url": target.link,
-                "webview_height_ratio": "full",
-                "messenger_extensions": False,
-                #"fallback_url": "https://petersfancybrownhats.com/"
-            }, # end of default_action
-            "buttons":[
-                # b1
-                {
-                     "type": "postback",
-                     "title": "stop alert",
-                     "payload": json.dumps(
-                         {
-                             "key": monitor_entity.key.urlsafe()
-                         }
-                     )
-                },
-#                # b2
-#                {
-#                     "type": "element_share",
-#               },
-            ] # end of buttons
-        } # end of elements
-        return element
-
-    def send_collection_template(self, recipient_id):
-        logging.info("sending collection to {recipient}".format(recipient=recipient_id))
-        params = {
-            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
-        }
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "attachment": {
-                    "type":"template",
-                    "payload":{
-                        "template_type":"generic",
-                        "sharable": "true",
-                        "elements": [self.element_builder(item) for item in get_monitoring(recipient_id)]   
-                    } # end of payload
-                } # end of attachment
-            } # end of message
-        })
-        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
-        if r.status_code != 200:
-            logging.info(r.status_code)
-            logging.info(r.text)
-
-    def send_charge_template(self, recipient_id):
-        logging.info("sending charge to {recipient}".format(recipient=recipient_id))
-        params = {
-            "access_token": os.environ["PAGE_ACCESS_TOKEN"],
-        }
-        headers = {
-            "Content-Type": "application/json"
-        }
-        data = json.dumps({
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "attachment": {
-                    "type":"template",
-                    "payload":{
-                        "template_type":"button",
-                        "text": "Oops! Run out of free alert quota",
-                        "buttons": [
-                            # b1
-                            {
-                                 "type": "postback",
-                                 "title": "more quota",
-                                 "payload": json.dumps(
-                                     {
-                                         "key": "buy"
-                                     }
-                                 )
-                            },
-                            # b2
-                            {
-                                 "type": "postback",
-                                 "title": "view my alerts",
-                                 "payload": json.dumps(
-                                     {
-                                         "key": "collection"
-                                     }
-                                 )
-                            }
-                        ]
-                    } # end of payload
-                } # end of attachment
-            } # end of message
-        })
-        r = requests.post("https://graph.facebook.com/v2.6/me/messages", params=params, headers=headers, data=data)
-        if r.status_code != 200:
-            logging.info(r.status_code)
-            logging.info(r.text)
-            
-    def get_metadata(self, url):
-        import requests
-        from bs4 import BeautifulSoup
-        header = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/67.0.3396.87 Safari/537.36"}
-        res = requests.get(url, headers=header)
-        assert res.status_code == 200
-        soup = BeautifulSoup(res.text, "lxml")
-        #meta = {"asin": re.search("dp/([A-Z0-9]+?)/", url).group(1)}
-        img = soup.select("#landingImage")[0]
-        meta = {
-            "asin": soup.select("#ASIN")[0]["value"],
-            "alt": img["alt"],
-            "img": img["data-old-hires"]
-            #"img": json.loads(img["data-a-dynamic-image"]).keys()[0]
-        }
-        logging.info(meta)
-        return meta
-
-    def get_price_stat(self, domain, url):
-        import requests
-        from bs4 import BeautifulSoup
-        header = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/67.0.3396.87 Safari/537.36"}
-        api_addr = {
-            "amazon.com": "https://camelcamelcamel.com/search",
-            "amazon.co.jp":"https://jp.camelcamelcamel.com/search"
-        }
-        res = requests.get(api_addr[domain], params={"sq": url}, headers=header)
-        assert res.status_code == 200
-        soup = BeautifulSoup(res.text, "lxml")
-        row_in_table = soup.select(".product_pane > tbody")[0].select("tr")
-        return "\n".join([" ".join([val.text for val in prop.select("td")]) for prop in row_in_table]).encode("utf-8")
-
 
 app = webapp2.WSGIApplication([
     ('/', MainPage),

@@ -1,2 +1,4 @@
 requests
 requests-toolbelt
+beautifulsoup4
+GoogleAppEngineCloudStorageClient==1.9.22.1
