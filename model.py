@@ -22,5 +22,5 @@ class Monitor(ndb.Model):
     switch = ndb.BooleanProperty(indexed=True, default=False)
     threshold = ndb.FloatProperty(indexed=False)
     #alert = ndb.ComputedProperty(lambda self: self.threshold < self.target.current)  # !!!
-    alert = ndb.BooleanProperty(indexed=True, default=False)
+    #alert = ndb.BooleanProperty(indexed=True, default=False)
     timestamp = ndb.DateTimeProperty(auto_now=True)

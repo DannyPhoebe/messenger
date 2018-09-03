@@ -1,0 +1,19 @@
+queue:
+- max_concurrent_requests: 4
+  name: update
+  rate: 20/m
+  retry_parameters:
+    max_backoff_seconds: 21600
+    min_backoff_seconds: 300 
+    task_age_limit: 2d
+    task_retry_limit: 3
+  target: messenger
+- max_concurrent_requests: 4
+  name: alert 
+  rate: 10/m
+  retry_parameters:
+    max_backoff_seconds: 21600
+    min_backoff_seconds: 300 
+    task_age_limit: 2d
+    task_retry_limit: 3
+  target: messenger
