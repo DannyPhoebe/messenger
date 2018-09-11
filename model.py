@@ -7,20 +7,19 @@ class User(ndb.Model):
 
 class Product(ndb.Model): # asin as key
     link = ndb.StringProperty(indexed=False)
-    lowest = ndb.FloatProperty(indexed=False, default=None)
+    currency = ndb.StringProperty(indexed=False)
+    #lowest = ndb.FloatProperty(indexed=False, default=None)
     current = ndb.FloatProperty(indexed=False, default=None)
     meta = ndb.JsonProperty(indexed=False)
     history = ndb.JsonProperty(indexed=False)
     timestamp = ndb.DateTimeProperty(auto_now=True)
-    #    symbol = ndb.StringProperty(indexed=True)
 
 class Monitor(ndb.Model):
-    #user = ndb.StructuredProperty(User, indexed=True)
     user = ndb.StringProperty(indexed=True)
     target = ndb.StringProperty(indexed=True) 
-    #target = ndb.StructuredProperty(Product, indexed=True)
     switch = ndb.BooleanProperty(indexed=True, default=False)
-    threshold = ndb.FloatProperty(indexed=False)
-    #alert = ndb.ComputedProperty(lambda self: self.threshold < self.target.current)  # !!!
-    #alert = ndb.BooleanProperty(indexed=True, default=False)
-    timestamp = ndb.DateTimeProperty(auto_now=True)
+    #alert = ndb.ComputedProperty(lambda self: self.threshold < self.target.current)
+    alert = ndb.BooleanProperty(indexed=True, default=False)
+    threshold = ndb.FloatProperty(indexed=True)
+    click = ndb.IntegerProperty(indexed=False, default=0)
+    timestamp = ndb.DateTimeProperty(auto_now_add=True)

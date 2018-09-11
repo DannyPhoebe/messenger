@@ -10,20 +10,8 @@ from google.appengine.api import urlfetch
 requests_toolbelt.adapters.appengine.monkeypatch()
 urlfetch.set_default_fetch_deadline(60)
 
-def get_stat(url):
-    api_addr = "https://us-central1-prime-basis-152406.cloudfunctions.net/stat_crawler"
-    r = requests.post(api_addr, json={"url":url}, timeout=60)
-    if r.status_code == 200:
-        return r.json()
-
-def get_meta(url):
-    api_addr = "https://us-central1-prime-basis-152406.cloudfunctions.net/meta_crawler"
-    r = requests.post(api_addr, json={"url":url}, timeout=60)
-    if r.status_code == 200:
-        return r.json()
-
 def get_product_info(url):
-    api_addr = "https://us-central1-prime-basis-152406.cloudfunctions.net/product_info_crawler"
+    api_addr = "https://us-central1-archdown-tracker.cloudfunctions.net/product_info_crawler"
     r = requests.post(api_addr, json={"url":url}, timeout=60)
     if r.status_code == 200:
         try:
@@ -40,6 +28,7 @@ def get_product_info(url):
 def stat_parser(price_stat):
     current = None
     lowest = None
+    average = None
     for provider in ["3rd Party New Price History", "Amazon Price History"]:
         if provider in price_stat:
             currency = price_stat[provider][0]["Current"][0][0]
@@ -51,7 +40,11 @@ def stat_parser(price_stat):
                 tmp = float(price_stat[provider][0]["Lowest"][0][1:].replace(",",""))
                 if not lowest or tmp < lowest:
                     lowest = tmp
-    return current, lowest
+            if "Average" in price_stat[provider][0]:
+                tmp = float(price_stat[provider][0]["Average"][0][1:].replace(",",""))
+                if not average or tmp < average:
+                    average = tmp
+    return current, lowest, average
     
 if __name__ == '__main__':
     pass

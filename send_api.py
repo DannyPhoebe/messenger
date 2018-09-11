@@ -201,7 +201,7 @@ def element_builder(entity_pair):
     element = {
         "title": product_entity.meta["alt"],
         "image_url": product_entity.meta["img"],
-        "subtitle": "現價: {}\n追價天數: {}".format(product_entity.current, (datetime.now() - monitor_entity.timestamp).days),
+        "subtitle": "現價: {}{}\n追價天數: {}".format(product_entity.currency.encode("utf-8"), product_entity.current, (datetime.now() - monitor_entity.timestamp).days),
         "default_action": {
             "type": "web_url",
             "url": product_entity.link,
@@ -269,12 +269,12 @@ def send_charge_template(recipient_id):
                 "type":"template",
                 "payload":{
                     "template_type":"button",
-                    "text": "Oops! 追價quota已用盡",
+                    "text": "Oops! 追價QUOTA已用盡",
                     "buttons": [
                         # b1
                         {
                              "type": "postback",
-                             "title": "取得更多quota",
+                             "title": "取得更多QUOTA",
                              "payload": json.dumps(
                                  {
                                      "key": "buy"
@@ -302,7 +302,7 @@ def send_charge_template(recipient_id):
         logging.info(r.text)
             
 def send_alert_template(recipient_id, link, meta, price_stat, monitor_key):
-    logging.info("sending generic_template to {recipient}".format(recipient=recipient_id))
+    logging.info("sending alert_template to {recipient}".format(recipient=recipient_id))
     params = {
         "access_token": os.environ["PAGE_ACCESS_TOKEN"],
     }
@@ -321,7 +321,8 @@ def send_alert_template(recipient_id, link, meta, price_stat, monitor_key):
                     "sharable": "true",
                     "elements":[
                         {
-                            "title": "※降價通知：" + meta["alt"],
+                            "title": "《！！！降價通知！！！》\n" + meta["alt"].encode("utf-8"),
+                            #"title": meta["alt"],
                             "image_url": meta["img"],
                             "subtitle": price_stat,
                             "default_action": {
@@ -335,7 +336,7 @@ def send_alert_template(recipient_id, link, meta, price_stat, monitor_key):
                                 # b1
                                 {
                                     "type": "web_url",
-                                    "url": link,
+                                    "url": "https://archdown-tracker.appspot.com/redirect?link={link}&key={key}".format(link=link, key=monitor_key),
                                     "title": "前往選購",
                                     "webview_height_ratio": "full",
                                     "messenger_extensions": False,

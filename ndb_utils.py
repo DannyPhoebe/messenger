@@ -16,20 +16,21 @@ def create_user_entity(uid, check=True):
     return key
 
 def create_monitor_entity(user_id, product_id, threshold, check=True):
+    from datetime import datetime
     if check:
         monitor = Monitor.query(ndb.AND(Monitor.user == user_id, Monitor.target == product_id)).get()
         if monitor is not None:
-            return monitor.key
+            return monitor.key if (datetime.now() - monitor.timestamp).seconds > 3600 else None # block duplicate message within
     monitor = Monitor(user=user_id, target=product_id, threshold=threshold)
     key = monitor.put()
     return key
 
-def create_product_entity(link, current, lowest, history, meta):
+def create_product_entity(link, currency, current, history, meta):
     product = Product.get_by_id(id=meta["asin"])
     if product is not None:
         return product.key
     else:
-        product = Product(id=meta["asin"], link=link, current=current, lowest=lowest, history=history, meta=meta)
+        product = Product(id=meta["asin"], link=link, currency=currency, current=current, history=history, meta=meta)
         key = product.put()
         return key
 
@@ -52,15 +53,29 @@ def get_monitoring(uid):
     products = ndb.get_multi([Product.get_by_id(m.target).key for m in monitoring])
     return zip(monitoring, products)
 
-def get_all_products():
-#    products = ndb.get_multi([Product.get_by_id(m.target).key for m in monitoring])
-    #!! only update those are monitored
-    products = Product.query().fetch()
+def get_all_products(only_monitoring=True):
+    if only_monitoring: # only update those are monitored
+        monitoring = Monitor.query(Monitor.switch == True).fetch()
+        product_ids = {_.target for _ in monitoring}
+        products = [Product.get_by_id(key) for key in product_ids]
+    else:
+        products = Product.query().fetch()
     return products
 
-def touch_alert(product_key):
-    product_entity = Product.get_by_id(product_key)
-    touch_alert_list = Monitor.query(ndb.AND(Monitor.threshold > product_entity.current, ndb.AND(Monitor.target == product_key.id(), Monitor.switch == True))).fetch()
+def touch_alert(product_key):  # cron at specific time?
+    #product_entity = Product.get_by_id(product_key)
+    product_entity = fetch_by_urlsafe_key(product_key)
+    current = product_entity.current
+    asin = product_entity.key.id()
+    query1 = Monitor.query(ndb.AND(Monitor.target == asin, Monitor.switch == True))
+    query2 = query1.filter(Monitor.threshold >= current)
+    query3 = query2.filter(Monitor.alert == False)
+    touch_alert_list = query3.fetch()
+    #touch_alert_list = Monitor.query(
+    #    ndb.AND(Monitor.target == asin,
+    #        ndb.AND(Monitor.threshold > current,
+    #            ndb.AND(Monitor.switch == True,
+    #                Monitor.alert == False)))).fetch()
     return touch_alert_list
 
 #    products = ndb.get_multi([Product.get_by_id(m.target).key for m in monitoring])
